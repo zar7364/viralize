@@ -1,19 +1,6 @@
-"""
-FastAPI wrapper untuk sistem multi-agent di main.py (Trend Scout -> Script
-Writer -> Scheduler), dipakai sebagai backend JSON API untuk frontend React
-"Viralyst" (folder Viralist/).
-
-Login/landing page sepenuhnya dipegang oleh frontend (Supabase Auth + Google
-OAuth, lihat src/components/Login.tsx). Backend ini HANYA memverifikasi
-access token Supabase yang dikirim tiap request (header Authorization:
-Bearer <token>) lalu mencocokkan emailnya ke whitelist ALLOWED_EMAILS -
-bukan mekanisme login itu sendiri, dan BUKAN otorisasi ke Google Calendar.
-Otorisasi Calendar tetap memakai kredensial OAuth yang sudah ada di
-gcp-oauth-keys.json, persis seperti di main.py.
-"""
-
 from __future__ import annotations
-
+from agno.agent import Agent
+from agno.tools.mcp import MCPTools
 import os
 import re
 import json
@@ -32,9 +19,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-
-from agno.agent import Agent
-from agno.tools.mcp import MCPTools
 
 # Reuse guardrails & model config yang sudah ada di main.py, bukan duplikasi.
 from main import get_model, validasi_konten_topik, validasi_jam, validasi_pilihan_topik
