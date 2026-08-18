@@ -31,7 +31,7 @@ Agent untuk membantu riset topik rending hook, script,dan scheduling:
   <img width="1373" height="494" alt="image" src="https://github.com/user-attachments/assets/f8bb82d0-c4d3-4841-aba6-e195cf21e8a9" />
 
 
-# Go Live
+# Go Live - https://viralyst-id.netlify.app
 
 <img width="1253" height="871" alt="image" src="https://github.com/user-attachments/assets/0940c939-de5e-4a1e-87b2-405c67970537" />
 <img width="1805" height="595" alt="image" src="https://github.com/user-attachments/assets/d99d3fd6-6f03-4004-940f-43569897b07f" />
