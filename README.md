@@ -1,10 +1,37 @@
+<div align="left">
+
+
+## Ujian Tengah Semester (UTS)
+### Inovasi dan Entrepreneurship Kecerdasan Artifisial (IEKA)
+**Merancang Solusi Agentic AI**
+
+### Nezar Abdilah Prakasa (**563414**)
+<br>
+
 # Viralize
 
-AI content orchestrator untuk TikTok/Reels/Shorts. Tiga agent berjalan berurutan untuk membantu riset topik, menulis naskah, sampai penjadwalan:
+### Tren Jadi Hook, dari Hook Jadi Script Viral
+**Platform Agentic AI untuk Pembuatan Script dan Manajemen Konten Kreator**
+</div>
 
-- Agent Hook (Trend Agent): riset tren dan keyword, hasilkan 10 kandidat topik dan 3 varian hook.
-- Agent Director (Script Writer): susun outline naskah, script lengkap, catatan visual, dan caption dari topik yang dipilih.
-- Agent Scheduler: jadwalkan publikasi, opsional langsung buat event asli di Google Calendar (khusus akun Agency).
+
+AI content orchestrator untuk TikTok/Reels/Shorts. 
+Agent untuk membantu riset topik rending hook, script,dan scheduling:
+
+
+
+
+ ## 1. Agent Hook (Trend Agent): riset tren dan keyword menghasilkan 10 kandidat topik.
+  <img width="1357" height="923" alt="image" src="https://github.com/user-attachments/assets/ae2220cc-0347-4546-8693-3514cba418f6" />
+  
+ ## 2. Agent Director (Script Writer): menyusun outline script lengkap, catatan untuk bagian visual, dan caption dari topik yang dipilih.
+  <img width="1458" height="406" alt="image" src="https://github.com/user-attachments/assets/5ea6608b-9def-44eb-9001-69d3fcc62e9f" />
+
+  ## 3. Agent Scheduler: penjadwalan untuk post, opsional bisa schedule di app atau di Google Calendar.
+  <img width="1373" height="494" alt="image" src="https://github.com/user-attachments/assets/f8bb82d0-c4d3-4841-aba6-e195cf21e8a9" />
+
+
+## Go Live - https://viralyst-id.netlify.app
 
 <img width="1253" height="871" alt="image" src="https://github.com/user-attachments/assets/0940c939-de5e-4a1e-87b2-405c67970537" />
 <img width="1805" height="595" alt="image" src="https://github.com/user-attachments/assets/d99d3fd6-6f03-4004-940f-43569897b07f" />
@@ -14,24 +41,27 @@ AI content orchestrator untuk TikTok/Reels/Shorts. Tiga agent berjalan berurutan
 
 ```
 content-agent-uts/
-  app.py              backend FastAPI, membungkus tiga agent di atas jadi REST API
-  main.py              definisi agent, konfigurasi model, dan guardrail yang dipakai app.py
+  app.py              backend FastAPI, tiga agent jadi REST API
+  main.py              definisi agent, konfigurasi model, dan guardrail app.py
   requirements.txt
-  .env.example          salin jadi .env, isi dengan nilai asli
+  .env.example          bisa di copy paste jadi .env dan isi kode atau key asli
   Viralist/              frontend, React + Vite + TypeScript
     src/
     supabase/schema.sql
-    .env.local.example    salin jadi .env.local, isi dengan nilai asli
+    .env.local.example    salin jadi .env.local dan isi dengan kode atau key asli
 ```
 
-Frontend menangani login dan data (brief, jadwal, profil user) lewat Supabase (Auth + Postgres). Backend adalah FastAPI yang membungkus agent yang dibangun pakai Agno (https://github.com/agno-agi/agno). Backend hanya memverifikasi token Supabase yang dikirim tiap request sebagai gerbang akses, bukan pemilik proses login itu sendiri.
+-Frontend
+login dan data (brief, jadwal, profil user) lewat Supabase (Auth + Postgres).
 
-Ada dua MCP server yang dipakai backend:
+-Backend 
+FastAPI yang membungkus agent yang dibangun pakai **Agno**. 
+Backend hanya memverifikasi token Supabase yang dikirim tiap request untuk akses
 
-- Firecrawl MCP (mcp.firecrawl.dev, streamable-http) untuk riset Agent Hook.
-- Google Calendar MCP (@cocal/google-calendar-mcp, dijalankan lokal lewat npx), dibatasi cuma boleh pakai tool create-event dan delete-event untuk Agent Scheduler.
+MCP (Model Context Protocol )
 
-Satu hal yang perlu diketahui: otorisasi Google Calendar itu satu akun untuk semua user (dipegang oleh kredensial gcp-oauth-keys.json di server), bukan koneksi per-user. Semua event yang dibuat lewat aplikasi akan masuk ke Calendar akun yang sama, siapapun yang login.
+1. Firecrawl MCP (mcp.firecrawl.dev, streamable-http) untuk riset Agent Hook.
+2. Google Calendar MCP (@cocal/google-calendar-mcp, dijalankan lokal lewat npx), saat ini mash dibatasi hanya pakai tool create-event dan delete-event untuk Agent Scheduler.
 
 Frontend dan backend di-deploy terpisah. Frontend bisa naik ke Netlify. Backend butuh hosting sendiri yang bisa menjalankan proses Python jangka panjang (VPS, Render, Railway, dan sejenisnya), karena Netlify cuma bisa melayani frontend statis.
 
@@ -46,8 +76,6 @@ venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
-
-Isi `.env` dengan nilai asli. Letakkan juga `gcp-oauth-keys.json` (OAuth client tipe "Desktop app" dari Google Cloud Console) di root `content-agent-uts`. File ini sudah di-gitignore, tidak ikut ter-commit.
 
 Jalankan dengan:
 
@@ -64,8 +92,9 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Database: buat project baru di Supabase, lalu jalankan seluruh isi `Viralist/supabase/schema.sql` di SQL editor-nya. Google Sign-In juga perlu dikonfigurasi di Authentication > Providers > Google, pakai OAuth client tipe "Web application".
+Database: buat project baru di Supabase, lalu jalankan seluruh isi `Viralist/supabase/schema.sql` di SQL editor-nya. 
 
 ## Deploy
 
-Frontend sudah siap deploy ke Netlify (`Viralist/netlify.toml` sudah disediakan, build command `npm run build`, publish directory `dist`). Backend perlu di-hosting terpisah karena menjalankan proses Python jangka panjang dan spawn subprocess npx.
+Frontend sudah siap deploy ke Netlify (`Viralist/netlify.toml` sudah disediakan, build command `npm run build`, publish directory `dist`). 
+Backend perlu di hosting terpisah karena running proses Python jangka panjang dan spawn subprocess npx.
