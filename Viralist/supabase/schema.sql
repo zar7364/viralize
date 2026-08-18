@@ -117,6 +117,36 @@ CREATE TABLE public.scheduled_posts (
 
 ALTER TABLE public.scheduled_posts ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can manage their own scheduled posts" 
-  ON public.scheduled_posts FOR ALL 
+CREATE POLICY "Users can manage their own scheduled posts"
+  ON public.scheduled_posts FOR ALL
   USING (auth.uid() = user_id);
+
+
+-- GOOGLE CALENDAR CONNECTIONS TABLE
+-- Refresh token per user untuk koneksi Google Calendar masing-masing.
+-- Tidak ada RLS policy sama sekali untuk role anon/authenticated - tabel
+-- ini cuma boleh diakses lewat service_role key di backend, karena
+-- refresh_token setara password dan tidak boleh bisa dibaca dari browser.
+CREATE TABLE public.google_calendar_connections (
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE PRIMARY KEY,
+  refresh_token TEXT NOT NULL,
+  connected_email TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+ALTER TABLE public.google_calendar_connections ENABLE ROW LEVEL SECURITY;
+
+
+-- VOUCHER REDEMPTIONS TABLE
+-- Catatan penukaran kode voucher promo, dipakai untuk membatasi jumlah
+-- total penukaran per kode. Tidak ada RLS policy - cuma diakses lewat
+-- service_role key di backend, sama seperti tabel Calendar di atas.
+CREATE TABLE public.voucher_redemptions (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  code TEXT NOT NULL,
+  redeemed_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(user_id, code)
+);
+
+ALTER TABLE public.voucher_redemptions ENABLE ROW LEVEL SECURITY;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { User, Sparkles, Check } from 'lucide-react';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
@@ -46,6 +46,7 @@ export interface CreatorPersonality {
 }
 
 import { supabase } from './lib/supabase';
+import { apiVoucherRedeem } from './lib/api';
 
 export default function App() {
   const [user, setUser] = useState<{ id: string; name: string; email: string; avatar: string; subscription_tier: string; subscription_status: string; subscription_start?: string; subscription_end?: string } | null>(null);
@@ -288,6 +289,31 @@ export default function App() {
     }
   };
 
+  const [voucherCode, setVoucherCode] = useState('');
+  const [voucherLoading, setVoucherLoading] = useState(false);
+  const [voucherError, setVoucherError] = useState<string | null>(null);
+
+  const handleRedeemVoucher = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!voucherCode.trim()) return;
+    setVoucherLoading(true);
+    setVoucherError(null);
+    try {
+      const result = await apiVoucherRedeem(voucherCode.trim());
+      setUser((prev) => prev ? {
+        ...prev,
+        subscription_tier: result.subscription_tier,
+        subscription_status: 'active',
+        subscription_end: result.subscription_end,
+      } : prev);
+      setVoucherCode('');
+    } catch (err: any) {
+      setVoucherError(err?.message || 'Gagal menukar voucher. Coba lagi.');
+    } finally {
+      setVoucherLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -295,35 +321,6 @@ export default function App() {
       console.error('Error during sign out:', error);
     } finally {
       setUser(null);
-    }
-  };
-
-  // Dev-only: ganti tier langganan akun sendiri buat testing (mis. cek
-  // gating fitur Agency), tanpa lewat payment beneran. RLS Supabase cuma
-  // izinkan user update baris profile-nya sendiri, jadi ini aman dipakai
-  // dengan anon key - tidak butuh service role key. Hanya muncul di dev
-  // build (import.meta.env.DEV), tidak ikut ke build production.
-  const handleDevSetTier = async (tier: 'free' | 'pro' | 'agency') => {
-    if (!user) return;
-    const endDate = new Date();
-    endDate.setFullYear(endDate.getFullYear() + 10);
-    try {
-      const { error } = await supabase.from('profiles').update({
-        subscription_tier: tier,
-        subscription_status: 'active',
-        subscription_start: new Date().toISOString(),
-        subscription_end: tier === 'free' ? null : endDate.toISOString(),
-      }).eq('id', user.id);
-      if (error) throw error;
-      setUser((prev) => prev ? {
-        ...prev,
-        subscription_tier: tier,
-        subscription_status: 'active',
-        subscription_end: tier === 'free' ? undefined : endDate.toISOString(),
-      } : prev);
-    } catch (err) {
-      console.error('Dev: gagal update subscription tier:', err);
-      alert('Gagal update tier (dev only). Detail error ada di console.');
     }
   };
 
@@ -492,14 +489,14 @@ export default function App() {
 
   return (
     <div className="app-container">
-      <Header user={user} onLogout={handleLogout} onDevSetTier={handleDevSetTier} />
+      <Header user={user} onLogout={handleLogout} />
 
       <main className={`main-content ${activeTab === 'dashboard' ? 'main-content-dashboard-override' : ''}`}>
         {showPaywall ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%', minHeight: '100%', padding: '2rem' }}>
             <h2 style={{ marginBottom: '0.5rem', color: '#111827', fontSize: '2rem', fontWeight: 800 }}>Pilih Paket Berlangganan</h2>
             <p style={{ marginBottom: '2.5rem', color: '#4b5563', textAlign: 'center' }}>Akun Anda saat ini berada di tier Free. Silakan upgrade untuk membuka semua fitur.</p>
-            
+
             <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', justifyContent: 'center', width: '100%', maxWidth: '1200px' }}>
               {/* Free Plan */}
               <div className="pricing-card glass-panel" style={{ maxWidth: '350px', width: '100%', display: 'flex', flexDirection: 'column', padding: '2rem', borderRadius: '16px', border: '1px solid rgba(255, 255, 255, 0.1)', background: 'rgba(255, 255, 255, 0.03)' }}>
@@ -589,6 +586,40 @@ export default function App() {
                   Contact Sales
                 </button>
               </div>
+            </div>
+
+            <div style={{ width: '100%', maxWidth: '600px', marginTop: '2rem', background: 'rgba(0,203,213,0.08)', border: '1px solid rgba(0,203,213,0.3)', borderRadius: '14px', padding: '1.25rem 1.5rem', textAlign: 'center' }}>
+              <p style={{ margin: 0, marginBottom: '0.75rem', color: '#0f172a', fontSize: '0.9rem' }}>
+                Punya kode voucher? Masukkan kode <strong>GOMKA</strong> untuk dapat paket Agency gratis selama 1 bulan (terbatas untuk 10 pengguna pertama).
+              </p>
+              <form onSubmit={handleRedeemVoucher} style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={voucherCode}
+                  onChange={(e) => setVoucherCode(e.target.value)}
+                  placeholder="Masukkan kode voucher"
+                  disabled={voucherLoading}
+                  style={{ padding: '0.6rem 1rem', borderRadius: '9999px', border: '1px solid var(--border-glass)', fontSize: '0.9rem', minWidth: '220px' }}
+                />
+                <button
+                  type="submit"
+                  disabled={voucherLoading || !voucherCode.trim()}
+                  style={{
+                    padding: '0.6rem 1.5rem',
+                    borderRadius: '9999px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #00cbd5 0%, #0891b2 100%)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: '0.9rem',
+                    cursor: voucherLoading ? 'not-allowed' : 'pointer',
+                    opacity: voucherLoading ? 0.7 : 1,
+                  }}
+                >
+                  {voucherLoading ? 'Memproses...' : 'Gunakan Voucher'}
+                </button>
+              </form>
+              {voucherError && <p style={{ color: '#dc2626', fontSize: '0.85rem', marginTop: '0.75rem', marginBottom: 0 }}>{voucherError}</p>}
             </div>
           </div>
         ) : (

@@ -177,3 +177,64 @@ export function apiScheduleDelete(eventId: string, calendarId = 'primary'): Prom
 export function streamScheduleDelete(eventId: string, calendarId = 'primary'): AsyncGenerator<StreamEvent> {
   return streamSSE('/api/schedule/delete/stream', { event_id: eventId, calendar_id: calendarId });
 }
+
+// Google Calendar per-user: tiap user connect Calendar-nya sendiri lewat
+// OAuth (beda dari flow /api/schedule/* di atas yang pakai satu koneksi
+// bersama). Create/delete event di sini langsung ke Calendar API user
+// tersebut, bukan lewat agent.
+
+export interface CalendarStatusResponse {
+  connected: boolean;
+  email: string | null;
+}
+
+export function apiCalendarStatus(): Promise<CalendarStatusResponse> {
+  return authedFetch('/api/calendar/status');
+}
+
+export function apiCalendarDisconnect(): Promise<{ success: boolean }> {
+  return authedFetch('/api/calendar/disconnect', { method: 'POST' });
+}
+
+export async function apiCalendarConnectUrl(): Promise<string> {
+  const { url } = await authedFetch<{ url: string }>('/api/calendar/oauth/start');
+  return url;
+}
+
+export interface CalendarEventResponse {
+  success: boolean;
+  event_id: string;
+  event_link: string;
+}
+
+export function apiCalendarCreateEvent(
+  judul: string,
+  tanggal: string,
+  jam: string,
+  durasiMenit = 60
+): Promise<CalendarEventResponse> {
+  return authedFetch('/api/calendar/create-event', {
+    method: 'POST',
+    body: { judul, tanggal, jam, durasi_menit: durasiMenit },
+  });
+}
+
+export function apiCalendarDeleteEvent(eventId: string): Promise<{ success: boolean }> {
+  return authedFetch('/api/calendar/delete-event', {
+    method: 'POST',
+    body: { event_id: eventId },
+  });
+}
+
+export interface VoucherRedeemResponse {
+  success: boolean;
+  subscription_tier: string;
+  subscription_end: string;
+}
+
+export function apiVoucherRedeem(code: string): Promise<VoucherRedeemResponse> {
+  return authedFetch('/api/voucher/redeem', {
+    method: 'POST',
+    body: { code },
+  });
+}

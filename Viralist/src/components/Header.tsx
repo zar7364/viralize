@@ -4,10 +4,9 @@ import { LogOut } from 'lucide-react';
 interface HeaderProps {
   user: { name: string; email: string; avatar: string; subscription_tier: string; subscription_status: string };
   onLogout: () => void;
-  onDevSetTier?: (tier: 'free' | 'pro' | 'agency') => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ user, onLogout, onDevSetTier }) => {
+export const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -91,34 +90,6 @@ export const Header: React.FC<HeaderProps> = ({ user, onLogout, onDevSetTier }) 
                 </span>
               </div>
             </div>
-
-            {onDevSetTier && (
-              <div style={{ padding: '0.6rem 0', borderTop: '1px dashed var(--border-glass)', borderBottom: '1px dashed var(--border-glass)', marginBottom: '0.5rem' }}>
-                <span style={{ fontSize: '0.65rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>Set Tier (Demo)</span>
-                <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.35rem' }}>
-                  {(['free', 'pro', 'agency'] as const).map((tier) => (
-                    <button
-                      key={tier}
-                      onClick={() => onDevSetTier(tier)}
-                      style={{
-                        flex: 1,
-                        fontSize: '0.7rem',
-                        textTransform: 'capitalize',
-                        padding: '0.3rem 0.4rem',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border-glass)',
-                        background: user.subscription_tier === tier ? 'var(--color-primary)' : 'transparent',
-                        color: user.subscription_tier === tier ? '#fff' : 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {tier}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <button
               className="btn btn-secondary profile-dropdown-logout"

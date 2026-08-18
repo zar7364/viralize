@@ -17,11 +17,14 @@ from __future__ import annotations
 import os
 import re
 import json
+import secrets
 import platform
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import urlencode
 
 import httpx
 from dotenv import load_dotenv
@@ -30,7 +33,7 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agno.agent import Agent
@@ -51,11 +54,34 @@ FRONTEND_ORIGINS = [
     for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
     if o.strip()
 ]
+# "*" (mis. untuk demo/presentasi, karena origin Netlify-nya bisa berubah-ubah
+# tergantung nama site) berarti izinkan semua origin. Aman dipakai bareng
+# allow_credentials=False di bawah (auth pakai Bearer token, bukan cookie).
+ALLOW_ALL_ORIGINS = FRONTEND_ORIGINS == ["*"]
+
+# --- Google Calendar per-user (OAuth "Web application" client) ---
+GOOGLE_CALENDAR_OAUTH_CLIENT_ID = os.getenv("GOOGLE_CALENDAR_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET", "").strip()
+GOOGLE_CALENDAR_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_CALENDAR_OAUTH_REDIRECT_URI", "").strip()
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+# --- Voucher promo: upgrade instan ke Agency 1 bulan, dibatasi jumlah
+# penukaran totalnya (bukan per user - begitu kuotanya habis, sudah habis
+# untuk semua orang). Dicek/dicatat di tabel voucher_redemptions.
+VOUCHER_CODE = "GOMKA"
+VOUCHER_MAX_REDEMPTIONS = 10
 
 # State per-user (topics, chosen topic, script, jadwal pending) disimpan di
 # memori server, diindeks oleh user id dari Supabase (bukan cookie session -
 # frontend memanggil API ini dengan Bearer token, bukan cookie).
 SESSION_STATE: dict[str, dict[str, Any]] = {}
+
+# Menghubungkan state OAuth (dikirim balik oleh Google saat redirect ke
+# /api/calendar/oauth/callback, request browser biasa tanpa Bearer token)
+# ke user id yang memintanya - short-lived, cukup di memori.
+OAUTH_STATE_MAP: dict[str, str] = {}
 
 
 def get_state(user_id: str) -> dict[str, Any]:
@@ -92,7 +118,10 @@ async def require_supabase_user(request: Request) -> dict[str, str]:
     user_id = data.get("id")
     if not email or not user_id:
         raise HTTPException(401, "Gagal membaca info user dari Supabase.")
-    if email not in ALLOWED_EMAILS:
+    # ALLOWED_EMAILS kosong (mis. untuk demo/presentasi) berarti semua akun
+    # yang berhasil login lewat Supabase diizinkan. Isi lagi env var ini
+    # dengan daftar email untuk mengaktifkan whitelist seperti biasa.
+    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
         raise HTTPException(403, "Email ini tidak diizinkan mengakses aplikasi.")
 
     return {"id": user_id, "email": email}
@@ -195,12 +224,121 @@ def extract_event_from_tool_result(tool_result: str | None) -> tuple[str | None,
     return ev.get("id"), ev.get("htmlLink")
 
 
+def require_service_role() -> None:
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(500, "SUPABASE_SERVICE_ROLE_KEY belum dikonfigurasi di .env server.")
+
+
+async def get_calendar_connection(user_id: str) -> dict | None:
+    """Baca koneksi Calendar milik user (kalau ada) lewat service_role key -
+    tabel ini tidak punya RLS policy sama sekali, jadi cuma bisa diakses
+    dari sini, bukan langsung dari frontend."""
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/google_calendar_connections",
+            headers={
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            },
+            params={"user_id": f"eq.{user_id}", "select": "refresh_token,connected_email"},
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0] if rows else None
+
+
+async def save_calendar_connection(user_id: str, refresh_token: str, connected_email: str | None) -> None:
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{SUPABASE_URL}/rest/v1/google_calendar_connections?on_conflict=user_id",
+            headers={
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal",
+            },
+            json={"user_id": user_id, "refresh_token": refresh_token, "connected_email": connected_email},
+        )
+        resp.raise_for_status()
+
+
+async def delete_calendar_connection(user_id: str) -> None:
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{SUPABASE_URL}/rest/v1/google_calendar_connections",
+            headers={
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            },
+            params={"user_id": f"eq.{user_id}"},
+        )
+        resp.raise_for_status()
+
+
+async def get_fresh_access_token(refresh_token: str) -> str:
+    """Tukar refresh_token yang tersimpan jadi access_token baru (berumur
+    pendek) tiap kali mau panggil Google Calendar API - refresh_token sendiri
+    tidak pernah dipakai langsung ke Calendar API."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "refresh_token": refresh_token,
+                "client_id": GOOGLE_CALENDAR_OAUTH_CLIENT_ID,
+                "client_secret": GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET,
+                "grant_type": "refresh_token",
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(502, "Gagal refresh token Google Calendar. Coba connect ulang lewat Settings.")
+    return resp.json()["access_token"]
+
+
+async def has_redeemed_voucher(user_id: str, code: str) -> bool:
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/voucher_redemptions",
+            headers={"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"},
+            params={"user_id": f"eq.{user_id}", "code": f"eq.{code}", "select": "id"},
+        )
+        resp.raise_for_status()
+        return len(resp.json()) > 0
+
+
+async def count_voucher_redemptions(code: str) -> int:
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/voucher_redemptions",
+            headers={
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "Prefer": "count=exact",
+            },
+            params={"code": f"eq.{code}", "select": "id"},
+        )
+        resp.raise_for_status()
+        content_range = resp.headers.get("content-range", "")
+        if "/" in content_range:
+            total = content_range.rsplit("/", 1)[-1]
+            if total.isdigit():
+                return int(total)
+        return len(resp.json())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     firecrawl_key = os.getenv("FIRECRAWL_API_KEY")
     firecrawl_mcp = MCPTools(
         transport="streamable-http",
         url=f"https://mcp.firecrawl.dev/{firecrawl_key}/v2/mcp",
+        # Sama seperti gcal_mcp di bawah - default 10s kadang kurang di
+        # lingkungan ini.
+        timeout_seconds=30,
     )
     firecrawl_ok = await connect_once(firecrawl_mcp, "Firecrawl")
     if not firecrawl_ok:
@@ -294,7 +432,7 @@ app = FastAPI(title="Viralist+ Content Agent", lifespan=lifespan)
 # allow_credentials tidak perlu True.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_ORIGINS,
+    allow_origins=["*"] if ALLOW_ALL_ORIGINS else FRONTEND_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -739,3 +877,230 @@ async def api_schedule_delete_stream(body: ScheduleDeleteIn, user: dict = Depend
         })
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ============================================================
+# Google Calendar per-user: tiap user connect Calendar-nya sendiri lewat
+# OAuth, bukan pakai satu koneksi bersama seperti Scheduler agent di atas.
+# Create/delete event di sini manggil Google Calendar API langsung (bukan
+# lewat MCP/agent) karena tokennya beda-beda tiap request tergantung siapa
+# yang login - MCP didesain untuk satu kredensial statis per proses.
+# ============================================================
+
+def calendar_oauth_configured() -> bool:
+    return bool(GOOGLE_CALENDAR_OAUTH_CLIENT_ID and GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET and GOOGLE_CALENDAR_OAUTH_REDIRECT_URI)
+
+
+@app.get("/api/calendar/oauth/start")
+async def calendar_oauth_start(user: dict = Depends(require_supabase_user)):
+    if not calendar_oauth_configured():
+        raise HTTPException(500, "Google Calendar OAuth belum dikonfigurasi di .env server.")
+
+    state_token = secrets.token_urlsafe(24)
+    OAUTH_STATE_MAP[state_token] = user["id"]
+
+    params = {
+        "client_id": GOOGLE_CALENDAR_OAUTH_CLIENT_ID,
+        "redirect_uri": GOOGLE_CALENDAR_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_CALENDAR_SCOPE,
+        "access_type": "offline",
+        # "consent" dipaksa supaya Google selalu kasih refresh_token baru,
+        # termasuk kalau user ini sudah pernah connect sebelumnya.
+        "prompt": "consent",
+        "state": state_token,
+    }
+    return {"url": "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)}
+
+
+@app.get("/api/calendar/oauth/callback")
+async def calendar_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    # Ini dipanggil lewat redirect browser dari Google (bukan fetch dari
+    # frontend), jadi hasilnya juga berupa redirect balik ke frontend -
+    # bukan JSON - dengan query param buat kasih tahu berhasil/gagal.
+    if error:
+        return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=0&error={error}")
+    if not code or not state or state not in OAUTH_STATE_MAP:
+        return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=0&error=invalid_state")
+
+    user_id = OAUTH_STATE_MAP.pop(state)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": GOOGLE_CALENDAR_OAUTH_CLIENT_ID,
+                "client_secret": GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET,
+                "redirect_uri": GOOGLE_CALENDAR_OAUTH_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            },
+        )
+    if token_resp.status_code != 200:
+        return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=0&error=token_exchange_failed")
+
+    tokens = token_resp.json()
+    refresh_token = tokens.get("refresh_token")
+    access_token = tokens.get("access_token")
+    if not refresh_token:
+        return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=0&error=no_refresh_token")
+
+    connected_email = None
+    async with httpx.AsyncClient(timeout=15) as client:
+        uresp = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if uresp.status_code == 200:
+            connected_email = uresp.json().get("email")
+
+    try:
+        await save_calendar_connection(user_id, refresh_token, connected_email)
+    except Exception:
+        return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=0&error=save_failed")
+
+    return RedirectResponse(f"{FRONTEND_URL}/?calendar_connected=1")
+
+
+@app.get("/api/calendar/status")
+async def calendar_status(user: dict = Depends(require_supabase_user)):
+    conn = await get_calendar_connection(user["id"])
+    return {"connected": conn is not None, "email": conn["connected_email"] if conn else None}
+
+
+@app.post("/api/calendar/disconnect")
+async def calendar_disconnect(user: dict = Depends(require_supabase_user)):
+    await delete_calendar_connection(user["id"])
+    return {"success": True}
+
+
+class CalendarEventIn(BaseModel):
+    judul: str = Field(min_length=1, max_length=200)
+    tanggal: str = Field(min_length=1, max_length=20)  # YYYY-MM-DD
+    jam: str  # HH:MM
+    durasi_menit: int = 60
+
+
+@app.post("/api/calendar/create-event")
+async def calendar_create_event(body: CalendarEventIn, user: dict = Depends(require_supabase_user)):
+    if not validasi_konten_topik(body.judul):
+        raise HTTPException(422, "[GUARDRAIL] Judul mengandung kata yang tidak diizinkan.")
+    if not validasi_jam(body.jam):
+        raise HTTPException(422, "[GUARDRAIL] Format jam tidak valid. Gunakan format HH:MM (contoh: 15:00).")
+
+    conn = await get_calendar_connection(user["id"])
+    if not conn:
+        raise HTTPException(400, "Google Calendar belum terhubung. Connect dulu lewat Settings.")
+
+    access_token = await get_fresh_access_token(conn["refresh_token"])
+
+    try:
+        start = datetime.fromisoformat(f"{body.tanggal}T{body.jam}:00")
+    except ValueError:
+        raise HTTPException(422, "[GUARDRAIL] Format tanggal tidak valid. Gunakan format YYYY-MM-DD.")
+    end = start + timedelta(minutes=body.durasi_menit)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "summary": body.judul,
+                "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Jakarta"},
+                "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Jakarta"},
+            },
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, f"Gagal membuat event di Google Calendar: {resp.text}")
+
+    data = resp.json()
+    return {"success": True, "event_id": data.get("id"), "event_link": data.get("htmlLink")}
+
+
+class CalendarDeleteIn(BaseModel):
+    event_id: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/calendar/delete-event")
+async def calendar_delete_event(body: CalendarDeleteIn, user: dict = Depends(require_supabase_user)):
+    conn = await get_calendar_connection(user["id"])
+    if not conn:
+        raise HTTPException(400, "Google Calendar belum terhubung.")
+
+    access_token = await get_fresh_access_token(conn["refresh_token"])
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{body.event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    # Google balas 204 kalau sukses, 410 kalau event itu sudah dihapus
+    # sebelumnya - dua-duanya dianggap "sudah tidak ada di Calendar", jadi
+    # sukses dari sudut pandang user.
+    if resp.status_code not in (204, 410):
+        raise HTTPException(502, f"Gagal menghapus event di Google Calendar: {resp.text}")
+    return {"success": True}
+
+
+# ============================================================
+# Voucher promo: upgrade instan ke Agency 1 bulan, dibatasi total
+# VOUCHER_MAX_REDEMPTIONS penukaran (bukan per user).
+# ============================================================
+
+class VoucherRedeemIn(BaseModel):
+    code: str = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/voucher/redeem")
+async def voucher_redeem(body: VoucherRedeemIn, user: dict = Depends(require_supabase_user)):
+    code = body.code.strip().upper()
+    if code != VOUCHER_CODE:
+        raise HTTPException(422, "Kode voucher tidak valid.")
+
+    already_redeemed = await has_redeemed_voucher(user["id"], code)
+    if not already_redeemed:
+        total = await count_voucher_redemptions(code)
+        if total >= VOUCHER_MAX_REDEMPTIONS:
+            raise HTTPException(409, f"Voucher ini sudah mencapai batas maksimal {VOUCHER_MAX_REDEMPTIONS} pengguna.")
+
+    now = datetime.utcnow()
+    end_date = now + timedelta(days=30)
+
+    require_service_role()
+    async with httpx.AsyncClient(timeout=15) as client:
+        if not already_redeemed:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/voucher_redemptions",
+                headers={
+                    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                json={"user_id": user["id"], "code": code},
+            )
+
+        resp = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            headers={
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            params={"id": f"eq.{user['id']}"},
+            json={
+                "subscription_tier": "agency",
+                "subscription_status": "active",
+                "subscription_start": now.isoformat(),
+                "subscription_end": end_date.isoformat(),
+            },
+        )
+    if resp.status_code not in (200, 204):
+        raise HTTPException(502, "Gagal update paket langganan. Coba lagi.")
+
+    return {
+        "success": True,
+        "subscription_tier": "agency",
+        "subscription_end": end_date.isoformat(),
+    }

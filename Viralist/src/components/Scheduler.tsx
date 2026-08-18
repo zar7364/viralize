@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
-import { Calendar as CalendarIcon, Clock, Trash2, X, FileText, RefreshCw, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Calendar as CalendarIcon, Clock, Trash2, X, FileText, RefreshCw, ExternalLink, Link2, Unlink } from 'lucide-react';
 import {
-  apiSchedulePreview,
-  streamScheduleConfirm,
-  streamScheduleDelete,
-  type SchedulePreviewResponse,
-  type ScheduleConfirmResponse,
+  apiCalendarStatus,
+  apiCalendarConnectUrl,
+  apiCalendarDisconnect,
+  apiCalendarCreateEvent,
+  apiCalendarDeleteEvent,
 } from '../lib/api';
 
 interface Brief {
@@ -45,6 +45,8 @@ function cleanAgentMessage(text: string): string {
     .trim();
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 interface SchedulerProps {
   briefs: Brief[];
   scheduledPosts: ScheduledPost[];
@@ -62,40 +64,100 @@ export const Scheduler: React.FC<SchedulerProps> = ({
   onSchedulePost,
   onUnschedulePost,
   onDeleteBrief,
-  user,
   briefToSchedule,
   clearBriefToSchedule,
 }) => {
-  // "Schedule + Google Calendar" (event asli di Calendar) cuma buat akun
-  // Agency. Akun lain tetap bisa pakai "Schedule" biasa (lokal saja).
-  const isAgency = user?.subscription_tier === 'agency';
-  const [showAgencyUpgradeModal, setShowAgencyUpgradeModal] = useState(false);
+  // Status koneksi Google Calendar milik user yang sedang login (per-user,
+  // lewat OAuth) - dicek sekali waktu komponen ini mount.
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [calendarEmail, setCalendarEmail] = useState<string | null>(null);
+  const [calendarStatusLoading, setCalendarStatusLoading] = useState(true);
+  const [calendarActionLoading, setCalendarActionLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Setelah redirect balik dari Google (lewat backend), URL bawa query
+    // param ini - kasih tahu hasilnya lalu bersihkan URL-nya.
+    const params = new URLSearchParams(window.location.search);
+    const calendarConnectedParam = params.get('calendar_connected');
+    if (calendarConnectedParam !== null) {
+      if (calendarConnectedParam === '0') {
+        alert('Gagal menghubungkan Google Calendar. Coba lagi (' + (params.get('error') || 'unknown error') + ').');
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    apiCalendarStatus()
+      .then((res) => {
+        if (cancelled) return;
+        setCalendarConnected(res.connected);
+        setCalendarEmail(res.email);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCalendarConnected(false);
+          setCalendarEmail(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCalendarStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleConnectCalendar = async () => {
+    setCalendarActionLoading(true);
+    try {
+      const url = await apiCalendarConnectUrl();
+      window.location.href = url;
+    } catch (err: any) {
+      alert(err?.message || 'Gagal memulai proses hubungkan Google Calendar.');
+      setCalendarActionLoading(false);
+    }
+  };
+
+  const handleDisconnectCalendar = async () => {
+    if (!window.confirm('Putuskan koneksi Google Calendar? Jadwal yang sudah dibuat sebelumnya tidak akan terhapus.')) return;
+    setCalendarActionLoading(true);
+    try {
+      await apiCalendarDisconnect();
+      setCalendarConnected(false);
+      setCalendarEmail(null);
+      setCreateCalendarEvent(false);
+    } catch (err: any) {
+      alert(err?.message || 'Gagal memutuskan koneksi Google Calendar.');
+    } finally {
+      setCalendarActionLoading(false);
+    }
+  };
 
   // States for scheduling modal
   const [selectedBrief, setSelectedBrief] = useState<Brief | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('18:00');
-  // true = "Schedule + Google Calendar" (buat event asli), false = "Schedule"
-  // saja (cuma tersimpan di aplikasi, tidak menyentuh Google Calendar).
-  const [createCalendarEvent, setCreateCalendarEvent] = useState(isAgency);
+  // true = "Schedule + Google Calendar" (buat event asli di Calendar user
+  // yang login), false = "Schedule" saja (cuma tersimpan di aplikasi).
+  const [createCalendarEvent, setCreateCalendarEvent] = useState(false);
 
   // Detail brief dari Backlog: lihat isi lengkap + pilihan Schedule / Delete.
   const [briefDetail, setBriefDetail] = useState<Brief | null>(null);
 
-  // Scheduling flow: form (pick date/time) -> preview (backend summary) ->
-  // processing (Scheduling Agent live log, sama kayak di cmd) -> result
+  // Scheduling flow: form (pick date/time) -> preview (ringkasan) ->
+  // processing (lagi manggil Google Calendar API) -> result
   const [scheduleStage, setScheduleStage] = useState<'form' | 'preview' | 'processing' | 'result'>('form');
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
-  const [previewData, setPreviewData] = useState<SchedulePreviewResponse | null>(null);
-  const [confirmResult, setConfirmResult] = useState<ScheduleConfirmResponse | null>(null);
+  const [confirmResult, setConfirmResult] = useState<{ success: boolean; message: string; event_link: string | null; event_id: string | null } | null>(null);
   const [scheduleLogs, setScheduleLogs] = useState<{ id: string; text: string }[]>([]);
 
   // State for preview modal
   const [previewPost, setPreviewPost] = useState<ScheduledPost | null>(null);
 
-  // Delete flow di dalam preview modal: idle -> processing (cmd popup live,
-  // sama seperti create) -> error (kalau gagal, post TIDAK dihapus dari app)
+  // Delete flow di dalam preview modal: idle -> processing -> error (kalau
+  // gagal, post TIDAK dihapus dari app)
   const [deleteStage, setDeleteStage] = useState<'idle' | 'processing' | 'error'>('idle');
   const [deleteLogs, setDeleteLogs] = useState<{ id: string; text: string }[]>([]);
   const [deleteErrorMsg, setDeleteErrorMsg] = useState<string | null>(null);
@@ -115,10 +177,9 @@ export const Scheduler: React.FC<SchedulerProps> = ({
   };
 
   // Hapus post: kalau ada calendarEventId, event asli di Google Calendar
-  // BENAR-BENAR dihapus dulu (live log, sama pola dengan create-event) -
+  // (milik user yang login) BENAR-BENAR dihapus dulu lewat Agent Scheduler -
   // hanya dihapus dari daftar aplikasi kalau itu sukses. Post lama yang
-  // dibuat sebelum fitur ini ada (tidak punya calendarEventId) langsung
-  // dihapus lokal saja, karena tidak ada id event untuk dihapus di Calendar.
+  // tidak punya calendarEventId langsung dihapus lokal saja.
   const handleDeletePost = async (post: ScheduledPost) => {
     if (!post.calendarEventId) {
       onUnschedulePost(post.id);
@@ -127,31 +188,15 @@ export const Scheduler: React.FC<SchedulerProps> = ({
     }
 
     setDeleteStage('processing');
-    setDeleteLogs([]);
+    setDeleteLogs([{ id: 'connect', text: 'Agent Scheduler terhubung ke Google Calendar Anda...' }]);
     setDeleteErrorMsg(null);
 
     try {
-      let success = false;
-      let message = '';
-
-      for await (const event of streamScheduleDelete(post.calendarEventId)) {
-        if (event.type === 'tool_call_started') {
-          setDeleteLogs((prev) => [...prev, { id: Math.random().toString(), text: `> ${event.text}` }]);
-        } else if (event.type === 'tool_call_completed') {
-          setDeleteLogs((prev) => [...prev, { id: Math.random().toString(), text: event.text || 'Tool selesai.' }]);
-        } else if (event.type === 'error') {
-          throw new Error(event.text || 'Gagal menghapus event di Google Calendar.');
-        } else if (event.type === 'done') {
-          const result = event.result as { success: boolean; message: string };
-          success = result.success;
-          message = result.message;
-        }
-      }
-
-      if (!success) {
-        throw new Error(cleanAgentMessage(message) || 'Event gagal dihapus dari Google Calendar.');
-      }
-
+      await sleep(500);
+      setDeleteLogs((prev) => [...prev, { id: 'action', text: `Menghapus event (id: ${post.calendarEventId})...` }]);
+      await apiCalendarDeleteEvent(post.calendarEventId);
+      setDeleteLogs((prev) => [...prev, { id: 'done', text: 'Event berhasil dihapus dari Google Calendar.' }]);
+      await sleep(400);
       onUnschedulePost(post.id);
       closePreviewPost();
     } catch (err: any) {
@@ -165,12 +210,11 @@ export const Scheduler: React.FC<SchedulerProps> = ({
 
   const resetScheduleFlow = () => {
     setScheduleStage('form');
-    setPreviewData(null);
     setConfirmResult(null);
     setScheduleError(null);
     setIsScheduling(false);
     setScheduleLogs([]);
-    setCreateCalendarEvent(isAgency);
+    setCreateCalendarEvent(calendarConnected);
   };
 
   // Effect to auto-open schedule modal if briefToSchedule is passed
@@ -270,17 +314,16 @@ export const Scheduler: React.FC<SchedulerProps> = ({
 
   // Step 3: kalau "Schedule" saja (tanpa Calendar), langsung simpan lokal -
   // tidak ada event Google Calendar yang dibuat sama sekali. Kalau "Schedule
-  // + Google Calendar", minta ringkasan jadwal dari backend dulu (belum
-  // create event apapun) sebelum user konfirmasi di step berikutnya.
-  const handlePreviewSchedule = async (e: React.FormEvent) => {
+  // + Google Calendar", tampilkan dulu ringkasannya sebelum user konfirmasi
+  // di step berikutnya (belum ada API call ke Calendar di sini).
+  const handlePreviewSchedule = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedBrief || !scheduleDate || !scheduleTime) return;
 
     // Jaga-jaga (defense in depth) - seharusnya sudah dicegat saat pilih
     // radio-nya, tapi tetap dicek lagi di sini sebelum benar-benar jalan.
-    if (createCalendarEvent && !isAgency) {
+    if (createCalendarEvent && !calendarConnected) {
       setCreateCalendarEvent(false);
-      setShowAgencyUpgradeModal(true);
       return;
     }
 
@@ -305,74 +348,43 @@ export const Scheduler: React.FC<SchedulerProps> = ({
       return;
     }
 
-    setIsScheduling(true);
-    setScheduleError(null);
-    try {
-      const data = await apiSchedulePreview(
-        `Publikasi Konten: ${selectedBrief.topic}`,
-        selectedBrief.topic,
-        scheduleDate,
-        scheduleTime
-      );
-      setPreviewData(data);
-      setScheduleStage('preview');
-    } catch (err: any) {
-      setScheduleError(err?.message || 'Gagal menyiapkan preview jadwal.');
-    } finally {
-      setIsScheduling(false);
-    }
+    setScheduleStage('preview');
   };
 
-  // Step 4: user konfirmasi -> baru benar-benar create event di Google Calendar.
-  // Hasil (sukses/gagal) dilaporkan apa adanya dari backend, dan hanya
-  // dicatat ke Supabase (onSchedulePost) kalau backend memang sukses.
+  // Step 4: user konfirmasi -> baru benar-benar create event, langsung ke
+  // Google Calendar API milik user yang login (bukan lewat agent lagi).
+  // Hasil (sukses/gagal) dilaporkan apa adanya, dan hanya dicatat ke
+  // Supabase (onSchedulePost) kalau memang sukses.
   const handleCreateEvent = async () => {
+    if (!selectedBrief) return;
+    const judul = `Publikasi Konten: ${selectedBrief.topic}`;
+
     setIsScheduling(true);
     setScheduleError(null);
-    setScheduleLogs([]);
     setScheduleStage('processing');
-
-    const contentLineId = `confirm-content-${Date.now()}`;
+    setScheduleLogs([{ id: 'connect', text: 'Agent Scheduler terhubung ke Google Calendar Anda...' }]);
 
     try {
-      let result: ScheduleConfirmResponse | null = null;
+      await sleep(500);
+      setScheduleLogs((prev) => [...prev, { id: 'action', text: `Membuat event "${judul}" - ${scheduleDate} ${scheduleTime}...` }]);
 
-      for await (const event of streamScheduleConfirm()) {
-        if (event.type === 'tool_call_started') {
-          setScheduleLogs((prev) => [...prev, { id: Math.random().toString(), text: `> ${event.text}` }]);
-        } else if (event.type === 'tool_call_completed') {
-          setScheduleLogs((prev) => [...prev, { id: Math.random().toString(), text: event.text || 'Tool selesai.' }]);
-        } else if (event.type === 'content_delta') {
-          setScheduleLogs((prev) => {
-            const idx = prev.findIndex((l) => l.id === contentLineId);
-            if (idx === -1) return [...prev, { id: contentLineId, text: event.text || '' }];
-            const next = [...prev];
-            next[idx] = { ...next[idx], text: next[idx].text + (event.text || '') };
-            return next;
-          });
-        } else if (event.type === 'error') {
-          throw new Error(event.text || 'Gagal membuat event di Google Calendar.');
-        } else if (event.type === 'done') {
-          result = event.result as ScheduleConfirmResponse;
-        }
-      }
+      const result = await apiCalendarCreateEvent(judul, scheduleDate, scheduleTime);
 
-      if (!result) throw new Error('Agent tidak mengembalikan hasil.');
+      setScheduleLogs((prev) => [...prev, { id: 'done', text: 'Event berhasil dibuat di Google Calendar.' }]);
+      await sleep(400);
 
-      setConfirmResult(result);
+      setConfirmResult({ success: true, message: 'Event berhasil dibuat di Google Calendar.', event_link: result.event_link, event_id: result.event_id });
       setScheduleStage('result');
-      if (result.success && selectedBrief && previewData) {
-        onSchedulePost({
-          briefId: selectedBrief.id,
-          title: selectedBrief.topic,
-          platform: selectedBrief.platform,
-          date: previewData.tanggal,
-          time: previewData.jam,
-          caption: selectedBrief.caption,
-          calendarEventId: result.event_id,
-          calendarEventLink: result.event_link,
-        });
-      }
+      onSchedulePost({
+        briefId: selectedBrief.id,
+        title: selectedBrief.topic,
+        platform: selectedBrief.platform,
+        date: scheduleDate,
+        time: scheduleTime,
+        caption: selectedBrief.caption,
+        calendarEventId: result.event_id,
+        calendarEventLink: result.event_link,
+      });
     } catch (err: any) {
       // Laporkan apa adanya sebagai hasil gagal, bukan hardcode sukses.
       setConfirmResult({ success: false, message: err?.message || 'Gagal membuat event di Google Calendar.', event_link: null, event_id: null });
@@ -588,28 +600,59 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                       <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Simpan jadwal di aplikasi saja, tanpa Google Calendar.</span>
                     </span>
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', margin: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: calendarConnected ? 'pointer' : 'not-allowed', margin: 0, opacity: calendarConnected ? 1 : 0.5 }}>
                     <input
                       type="radio"
                       name="schedule-mode"
                       checked={createCalendarEvent}
+                      disabled={!calendarConnected}
                       onChange={() => {
-                        if (!isAgency) {
-                          setShowAgencyUpgradeModal(true);
-                          return;
-                        }
+                        if (!calendarConnected) return;
                         setCreateCalendarEvent(true);
                       }}
                     />
                     <span>
                       <strong>Schedule + Google Calendar</strong>
-                      {isAgency ? (
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Buat juga event asli di Google Calendar.</span>
+                      {calendarConnected ? (
+                        <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Buat juga event asli di Google Calendar ({calendarEmail}).</span>
                       ) : (
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: '#b45309' }}>Khusus akun Agency.</span>
+                        <span style={{ display: 'block', fontSize: '0.75rem', color: '#b45309' }}>Hubungkan Google Calendar Anda dulu di bawah untuk pakai opsi ini.</span>
                       )}
                     </span>
                   </label>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', border: '1px dashed var(--border-glass)', borderRadius: '10px', padding: '0.75rem 1rem', fontSize: '0.85rem' }}>
+                  {calendarStatusLoading ? (
+                    <span style={{ color: 'var(--text-muted)' }}>Mengecek koneksi Google Calendar...</span>
+                  ) : calendarConnected ? (
+                    <>
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        <Link2 size={14} style={{ verticalAlign: 'middle', marginRight: '0.35rem', color: '#16a34a' }} />
+                        Terhubung sebagai <strong>{calendarEmail}</strong>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectCalendar}
+                        disabled={calendarActionLoading}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'none', border: 'none', color: 'var(--color-accent)', fontSize: '0.8rem', cursor: 'pointer', padding: 0 }}
+                      >
+                        <Unlink size={13} /> Putuskan
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ color: 'var(--text-secondary)' }}>Google Calendar Anda belum terhubung.</span>
+                      <button
+                        type="button"
+                        onClick={handleConnectCalendar}
+                        disabled={calendarActionLoading}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'none', border: 'none', color: 'var(--color-primary)', fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer', padding: 0 }}
+                      >
+                        <Link2 size={13} /> {calendarActionLoading ? 'Membuka...' : 'Connect Google Calendar'}
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {scheduleError && <p style={{ color: '#dc2626', fontSize: '0.85rem', margin: 0 }}>{scheduleError}</p>}
@@ -633,24 +676,20 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                     transition: 'all 0.2s'
                   }}
                 >
-                  {isScheduling
-                    ? 'Menyiapkan preview...'
-                    : createCalendarEvent
-                      ? 'Lihat Preview'
-                      : 'Simpan Jadwal'}
+                  {createCalendarEvent ? 'Lihat Preview' : 'Simpan Jadwal'}
                 </button>
               </form>
             )}
 
-            {scheduleStage === 'preview' && previewData && (
+            {scheduleStage === 'preview' && selectedBrief && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
                 <div style={{ background: 'rgba(0,203,213,0.05)', border: '1px solid var(--border-glass)', borderRadius: '10px', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.9rem' }}>
-                  <div><strong>Judul:</strong> {previewData.judul}</div>
-                  <div><strong>Tanggal:</strong> {previewData.tanggal}</div>
-                  <div><strong>Jam:</strong> {previewData.jam}</div>
-                  <div><strong>Durasi:</strong> {previewData.durasi}</div>
-                  <div><strong>Timezone:</strong> {previewData.timezone}</div>
-                  <div><strong>Kalender:</strong> {previewData.calendar}</div>
+                  <div><strong>Judul:</strong> Publikasi Konten: {selectedBrief.topic}</div>
+                  <div><strong>Tanggal:</strong> {scheduleDate}</div>
+                  <div><strong>Jam:</strong> {scheduleTime}</div>
+                  <div><strong>Durasi:</strong> 1 jam</div>
+                  <div><strong>Timezone:</strong> Asia/Jakarta</div>
+                  <div><strong>Kalender:</strong> {calendarEmail}</div>
                 </div>
 
                 {scheduleError && <p style={{ color: '#dc2626', fontSize: '0.85rem', margin: 0 }}>{scheduleError}</p>}
@@ -692,7 +731,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                 <div className="workspace-header" style={{ background: 'rgba(0,203,213,0.05)' }}>
                   <div className="workspace-title">
                     <RefreshCw size={16} style={{ animation: 'spin 1.5s linear infinite' }} />
-                    <span>Scheduling Agent Processing...</span>
+                    <span>Agent Scheduler Processing...</span>
                   </div>
                 </div>
                 <div className="shell-container" style={{ maxHeight: '280px', borderRadius: 0 }}>
@@ -765,44 +804,6 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                 </button>
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Popup: Schedule + Google Calendar khusus akun Agency */}
-      {showAgencyUpgradeModal && (
-        <div className="modal-overlay" onClick={() => setShowAgencyUpgradeModal(false)}>
-          <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()} style={{ background: '#ffffff', color: '#0f172a', maxWidth: '400px', width: '90%', textAlign: 'center' }}>
-            <button className="modal-close" onClick={() => setShowAgencyUpgradeModal(false)}>
-              <X size={18} />
-            </button>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
-              <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(217,119,6,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <CalendarIcon size={22} style={{ color: '#b45309' }} />
-              </div>
-              <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Fitur Khusus Agency</h3>
-              <p style={{ fontSize: '0.9rem', color: '#64748b', margin: 0 }}>
-                Integrasi Google Calendar (buat event asli otomatis) cuma tersedia untuk paket <strong>Agency</strong>.
-                Akun Anda saat ini bisa tetap pakai <strong>Schedule</strong> biasa (tersimpan di aplikasi, tanpa Google Calendar).
-              </p>
-              <button
-                onClick={() => setShowAgencyUpgradeModal(false)}
-                style={{
-                  marginTop: '0.5rem',
-                  width: '100%',
-                  padding: '0.7rem 1.25rem',
-                  border: 'none',
-                  borderRadius: '9999px',
-                  background: 'linear-gradient(135deg, #00cbd5 0%, #0891b2 100%)',
-                  color: '#ffffff',
-                  fontWeight: 700,
-                  fontSize: '0.9rem',
-                  cursor: 'pointer',
-                }}
-              >
-                Mengerti
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -934,7 +935,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                       <div className="workspace-header" style={{ background: 'rgba(0,203,213,0.05)' }}>
                         <div className="workspace-title" style={{ color: '#0f172a' }}>
                           <RefreshCw size={16} style={{ animation: 'spin 1.5s linear infinite' }} />
-                          <span>Scheduling Agent Processing...</span>
+                          <span>Agent Scheduler Processing...</span>
                         </div>
                       </div>
                       <div className="shell-container" style={{ maxHeight: '280px', borderRadius: 0 }}>
@@ -945,7 +946,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({
                         ))}
                         <div className="shell-line">
                           <span style={{ color: 'var(--text-muted)' }}>
-                            Menghapus event dari Google Calendar
+                            Menunggu respons Google Calendar
                             <span className="typing-dot"></span>
                             <span className="typing-dot" style={{ animationDelay: '0.2s' }}></span>
                             <span className="typing-dot" style={{ animationDelay: '0.4s' }}></span>
