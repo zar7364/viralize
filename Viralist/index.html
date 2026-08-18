@@ -13,11 +13,20 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
+      // Service worker sebelumnya cache index.html secara permanen (cache-first,
+      // nama cache statis) - setelah deploy baru, browser yang sudah pernah
+      // install service worker itu tetap disajikan index.html versi lama yang
+      // menunjuk ke file JS/CSS yang sudah tidak ada lagi di server (halaman
+      // putih kosong sampai hard refresh). Bersihkan yang sudah terlanjur
+      // terpasang di browser user, jangan daftarkan lagi yang baru.
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('Service Worker registered', reg))
-            .catch(err => console.log('Service Worker registration failed', err));
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then((names) => {
+          names.forEach((name) => caches.delete(name));
         });
       }
     </script>
