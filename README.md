@@ -6,6 +6,10 @@ AI content orchestrator untuk TikTok/Reels/Shorts. Tiga agent berjalan berurutan
 - Agent Director (Script Writer): susun outline naskah, script lengkap, catatan visual, dan caption dari topik yang dipilih.
 - Agent Scheduler: jadwalkan publikasi, opsional langsung buat event asli di Google Calendar (khusus akun Agency).
 
+<img width="1253" height="871" alt="image" src="https://github.com/user-attachments/assets/0940c939-de5e-4a1e-87b2-405c67970537" />
+<img width="1805" height="595" alt="image" src="https://github.com/user-attachments/assets/d99d3fd6-6f03-4004-940f-43569897b07f" />
+<img width="1350" height="825" alt="image" src="https://github.com/user-attachments/assets/5b66c6d9-440e-46f6-9f0f-8935c1580593" />
+
 ## Struktur folder
 
 ```
