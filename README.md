@@ -1,35 +1,35 @@
 # Viralize
 
-AI content orchestrator for TikTok/Reels/Shorts. Three agents run in sequence to help with topic research, script writing, and scheduling:
+AI content orchestrator untuk TikTok/Reels/Shorts. Tiga agent berjalan berurutan untuk membantu riset topik, menulis naskah, sampai penjadwalan:
 
-- Agent Hook (Trend Agent): researches trends and keywords, produces 10 candidate topics and 3 hook variations.
-- Agent Director (Script Writer): builds the script outline, full script, visual notes, and caption from the chosen topic.
-- Agent Scheduler: schedules publication, optionally creating a real Google Calendar event (Agency accounts only).
+- Agent Hook (Trend Agent): riset tren dan keyword, hasilkan 10 kandidat topik dan 3 varian hook.
+- Agent Director (Script Writer): susun outline naskah, script lengkap, catatan visual, dan caption dari topik yang dipilih.
+- Agent Scheduler: jadwalkan publikasi, opsional langsung buat event asli di Google Calendar (khusus akun Agency).
 
-## Layout
+## Struktur folder
 
 ```
 content-agent-uts/
-  app.py              backend FastAPI app, exposes the three agents above as a REST API
-  main.py              agent definitions, model config, and guardrails used by app.py
+  app.py              backend FastAPI, membungkus tiga agent di atas jadi REST API
+  main.py              definisi agent, konfigurasi model, dan guardrail yang dipakai app.py
   requirements.txt
-  .env.example          copy to .env and fill in real values
+  .env.example          salin jadi .env, isi dengan nilai asli
   Viralist/              frontend, React + Vite + TypeScript
     src/
     supabase/schema.sql
-    .env.local.example    copy to .env.local and fill in real values
+    .env.local.example    salin jadi .env.local, isi dengan nilai asli
 ```
 
-Frontend handles login and data (briefs, schedule, user profile) through Supabase (Auth + Postgres). Backend is FastAPI, wrapping agents built with Agno (https://github.com/agno-agi/agno). It only verifies the Supabase token sent with each request as an access gate, it does not own the login flow itself.
+Frontend menangani login dan data (brief, jadwal, profil user) lewat Supabase (Auth + Postgres). Backend adalah FastAPI yang membungkus agent yang dibangun pakai Agno (https://github.com/agno-agi/agno). Backend hanya memverifikasi token Supabase yang dikirim tiap request sebagai gerbang akses, bukan pemilik proses login itu sendiri.
 
-Two MCP servers are used by the backend:
+Ada dua MCP server yang dipakai backend:
 
-- Firecrawl MCP (mcp.firecrawl.dev, streamable-http) for the Agent Hook's research.
-- Google Calendar MCP (@cocal/google-calendar-mcp, run locally through npx), restricted to only the create-event and delete-event tools for Agent Scheduler.
+- Firecrawl MCP (mcp.firecrawl.dev, streamable-http) untuk riset Agent Hook.
+- Google Calendar MCP (@cocal/google-calendar-mcp, dijalankan lokal lewat npx), dibatasi cuma boleh pakai tool create-event dan delete-event untuk Agent Scheduler.
 
-One thing worth knowing: Google Calendar authorization is a single shared account for all users (held by the gcp-oauth-keys.json credential on the server), not a per-user connection. Every event created through the app lands in the same calendar regardless of who is logged in.
+Satu hal yang perlu diketahui: otorisasi Google Calendar itu satu akun untuk semua user (dipegang oleh kredensial gcp-oauth-keys.json di server), bukan koneksi per-user. Semua event yang dibuat lewat aplikasi akan masuk ke Calendar akun yang sama, siapapun yang login.
 
-Frontend and backend are deployed separately. The frontend can go on something like Netlify. The backend needs its own host that can run a long-lived Python process (a VPS, Render, Railway, etc.) since Netlify only serves static frontends.
+Frontend dan backend di-deploy terpisah. Frontend bisa naik ke Netlify. Backend butuh hosting sendiri yang bisa menjalankan proses Python jangka panjang (VPS, Render, Railway, dan sejenisnya), karena Netlify cuma bisa melayani frontend statis.
 
 ## Setup
 
@@ -43,9 +43,9 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Fill in `.env` with real values. Also place `gcp-oauth-keys.json` (a "Desktop app" OAuth client from Google Cloud Console) in the `content-agent-uts` root. It is gitignored and won't be committed.
+Isi `.env` dengan nilai asli. Letakkan juga `gcp-oauth-keys.json` (OAuth client tipe "Desktop app" dari Google Cloud Console) di root `content-agent-uts`. File ini sudah di-gitignore, tidak ikut ter-commit.
 
-Run it with:
+Jalankan dengan:
 
 ```
 uvicorn app:app --reload --port 8001
@@ -60,8 +60,8 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Database: create a Supabase project and run all of `Viralist/supabase/schema.sql` in its SQL editor. Google Sign-In also needs to be configured under Authentication > Providers > Google, using a "Web application" OAuth client.
+Database: buat project baru di Supabase, lalu jalankan seluruh isi `Viralist/supabase/schema.sql` di SQL editor-nya. Google Sign-In juga perlu dikonfigurasi di Authentication > Providers > Google, pakai OAuth client tipe "Web application".
 
 ## Deploy
 
-The frontend is ready for Netlify (`Viralist/netlify.toml` is already set up, build command `npm run build`, publish directory `dist`). The backend needs to be hosted separately since it runs a long-lived Python process and spawns an `npx` subprocess.
+Frontend sudah siap deploy ke Netlify (`Viralist/netlify.toml` sudah disediakan, build command `npm run build`, publish directory `dist`). Backend perlu di-hosting terpisah karena menjalankan proses Python jangka panjang dan spawn subprocess npx.
