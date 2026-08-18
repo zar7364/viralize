@@ -6,6 +6,12 @@ AI content orchestrator for TikTok/Reels/Shorts. Three agents run in sequence to
 - Agent Director (Script Writer): builds the script outline, full script, visual notes, and caption from the chosen topic.
 - Agent Scheduler: schedules publication, optionally creating a real Google Calendar event (Agency accounts only).
 
+<img width="1253" height="871" alt="image" src="https://github.com/user-attachments/assets/0940c939-de5e-4a1e-87b2-405c67970537" />
+<img width="1805" height="595" alt="image" src="https://github.com/user-attachments/assets/d99d3fd6-6f03-4004-940f-43569897b07f" />
+<img width="1350" height="825" alt="image" src="https://github.com/user-attachments/assets/5b66c6d9-440e-46f6-9f0f-8935c1580593" />
+
+
+
 ## Layout
 
 ```
