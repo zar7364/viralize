@@ -1,0 +1,26 @@
+{
+  "short_name": "Viralize",
+  "name": "Viralize AI Content Orchestrator",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0a0b10",
+  "theme_color": "#00cbd5",
+  "display": "standalone",
+  "orientation": "portrait"
+}

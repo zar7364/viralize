@@ -1,0 +1,22 @@
+# Environment variables & secrets
+.env
+gcp-oauth-keys.json
+.gcp-saved-tokens.json
+tokens.json
+
+# Database
+*.db
+gcal-tokens.json
+
+# Logs
+*.log
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
